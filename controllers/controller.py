@@ -1,0 +1,304 @@
+# from model import CameraModel
+from views.AvailableCamerasDialog import AvailableCamerasDialog
+from views.view import SettingsView
+from models.model import Esp32Device,Esp32Manager
+from views.view import MainWindow
+from PyQt6.QtWidgets import (QMessageBox)
+from PyQt6.QtCore import Qt, QObject, pyqtSignal
+from controllers.network import MqttController, VideoStreamController
+from controllers.video import  ProcessingController,VideoProcessController,VideoProcessWorker
+import struct
+
+class DeviceConnectionManager(QObject):
+    device_discovered = pyqtSignal(str,str)
+    device_acknowledged = pyqtSignal(str)
+    device_activated = pyqtSignal(str)
+    device_deactivated = pyqtSignal(str)
+    device_disconnected = pyqtSignal(str)
+
+    request_start = pyqtSignal(str)
+    request_ack = pyqtSignal(str)
+    request_stop = pyqtSignal(str)
+
+    def __init__(self, model: Esp32Manager, mqtt: MqttController):
+        super().__init__()
+        self.model = model
+        self.mqtt = mqtt
+
+    def handle_discovery(self,payload : str):
+        device_id, ip = payload.split(":")
+        device = self.model.get_device(device_id)
+        if not device:
+            device = Esp32Device(id=device_id, ip=ip, name=f"Camera-{device_id}", connected=True, active=False)
+            self.mqtt.subscribe(f"{device_id}/status",1)
+            self.mqtt.subscribe(f"{device_id}/amg8833")
+            self.model.add_device(device)
+            self.device_discovered.emit(device_id, ip)
+        else:
+            device.ip = ip
+            device.connected = True
+            device.active = False
+        self.request_ack.emit(device_id)
+        self.device_acknowledged.emit(device_id)
+
+    def handle_status(self, device_id: str, status: str):
+        device = self.model.get_device(device_id)
+        if not device:
+            return
+
+        prev_active = device.active
+
+        if status == "active":
+            device.active = True
+            #if not prev_active:
+            self.device_activated.emit(device_id)
+
+        elif status == "connected":
+            #if prev_active:
+            device.active = False
+            self.device_deactivated.emit(device_id)
+
+        elif status == "offline":
+            device.connected = False
+            device.active = False
+            self.device_disconnected.emit(device_id)
+
+    def request_start_device(self, device_id: str):
+        self.request_start.emit(device_id)
+
+    def request_stop_device(self, device_id: str):
+        self.request_stop.emit(device_id)
+
+class DeviceManager(QObject):
+    def __init__(self, model: Esp32Manager, mqtt_client:MqttController):
+        super().__init__()
+        self.model = model
+        self.connection = DeviceConnectionManager(model,mqtt_client)
+        self.streams = VideoProcessController()
+        self.processor = ProcessingController()
+        self.mqtt = mqtt_client
+
+        # Bind stream output to processor
+        self.streams.frame_ready.connect(self.processor.handle_frame)
+
+        # Bind processor output to GUI (connect in GuiController)
+        #self.processor.overlay_ready.connect(...)
+
+        # Handle activation
+        self.connection.device_activated.connect(self._on_device_activated)
+        self.connection.device_deactivated.connect(self._on_device_deactivated)
+        self.connection.device_disconnected.connect(self._on_device_disconnected)
+
+        # MQTT send commands
+        self.connection.request_start.connect(lambda id: self.mqtt.publish(f"{id}/control", "start"))
+        self.connection.request_stop.connect(lambda id: self.mqtt.publish(f"{id}/control", "stop"))
+        self.connection.request_ack.connect(lambda id: self.mqtt.publish(f"{id}/control", "ack-connect"))
+
+    def handle_mqtt(self, topic: str, payload: bytes):
+        if topic == "discovery":
+            self.connection.handle_discovery(payload.decode())
+        elif topic.endswith("/status"):
+            device_id = topic.split("/")[0]
+            self.connection.handle_status(device_id, payload.decode())
+            print(device_id,payload.decode())
+        elif topic.endswith("/amg8833"):
+            device_id = topic.split("/")[0]
+            floats = struct.unpack('<64f', payload)
+            matrix = [floats[i * 8:(i + 1) * 8] for i in range(8)]
+            self.processor.update_matrix(device_id, matrix)
+
+    def _on_device_activated(self, device_id: str):
+        device = self.model.get_device(device_id)
+        if device:
+            self.streams.start_stream(device.id, device.ip)
+
+    def _on_device_deactivated(self, device_id: str):
+        self.streams.stop_stream(device_id)
+        self.model.get_device(device_id).active=False
+
+    def _on_device_disconnected(self, device_id: str):
+        self.streams.stop_stream(device_id)
+        self.model.get_device(device_id).active=False
+        self.model.get_device(device_id).connected = False
+        self.model.remove_device(device_id)
+
+    def stop_all(self):
+        self.streams.stop_all()
+
+    def start_device(self, device_id: str):
+        self.connection.request_start_device(device_id)
+
+    def stop_device(self, device_id: str):
+        self.connection.request_stop_device(device_id)
+
+class GuiController:
+    def __init__(self, model: Esp32Manager,view: MainWindow, device_manager:DeviceManager):
+
+        self.model = model
+        self.view = view
+        self.devices = device_manager
+
+        self.view.settings_button.clicked.connect(self._open_settings)
+        self.view.add_camera_button.clicked.connect(self._open_available_cameras)
+        self.view.camera_clicked.connect(self._handle_camera_click)
+
+        self.devices.processor.overlay_ready.connect(self.view.update_camera_frame)
+
+    def _handle_camera_click(self, camera_id, button):
+        if button == Qt.MouseButton.RightButton:
+            if self.view.expanded_camera_id == camera_id:
+                QMessageBox.warning(
+                    self.view,
+                    "Удаление невозможно",
+                    "Нельзя удалить развернутую камеру. Сначала сверните её."
+                )
+                return
+            confirm = QMessageBox.question(
+                self.view,
+                "Подтверждение удаления",
+                f"Удалить камеру {camera_id}?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if confirm == QMessageBox.StandardButton.Yes:
+                self.devices.stop_device(camera_id)
+                self.model.disconnect_device(camera_id)
+                self.view.remove_camera_widget(camera_id)
+
+        elif button == Qt.MouseButton.LeftButton:
+            self.view.toggle_chosen_camera(camera_id)
+
+    def _open_available_cameras(self):
+        cameras = [(d.id, d.name) for d in self.model.get_available_devices()]
+        dialog = AvailableCamerasDialog(cameras)
+        if dialog.exec():
+            for device_id in dialog.get_selected():
+                self.model.get_device(device_id).active = True
+                self.view.add_camera_widget(device_id, f"Cam-{device_id}")
+                self.devices.start_device(device_id)
+
+    def _open_settings(self):
+        settings_view = SettingsView()
+        settings_view.url_input.setText("http://default-camera-url.com")
+
+        def save_and_close():
+            new_url = settings_view.url_input.text()
+            # TODO: save to device config
+            settings_view.close()
+
+        settings_view.save_btn.clicked.connect(save_and_close)
+        settings_view.exec()
+
+    def stop(self):
+        self.devices.stop_all()
+class CameraController:
+
+
+    def __init__(self, model, view: MainWindow,network:MqttController):
+        self.network = network
+        self.model: Esp32Manager = model
+        self.view :MainWindow = view
+        self.video = VideoStreamController()
+        self.processing = ProcessingController()
+
+        self.video.frame_ready.connect(self.processing.handle_frame)
+        # self.thread = VideoThread(model)
+
+        # Настройка сигналов/слотов
+        # self.thread.frame_captured.connect(self.view.show_frame)
+        self.view.settings_button.clicked.connect(self._open_settings)
+        self.view.add_camera_button.clicked.connect(self._open_available_cameras)
+        self.view.camera_clicked.connect(self._handle_camera_click)
+        self.network.mqtt_message_recieved.connect(self.handle_mqtt_message)
+
+        self.processing.overlay_ready.connect(view.update_camera_frame)
+    def _handle_camera_click(self,camera_id,button):
+        if button is Qt.MouseButton.RightButton:
+            if self.view.expanded_camera_id == camera_id:
+                QMessageBox.warning(
+                    self.view,
+                    "Удаление невозможно",
+                    "Нельзя удалить развернутую камеру. Сначала сверните её."
+                )
+                return
+            confirm = QMessageBox.question(
+                self.view,
+                "Подтверждение удаления",
+                f"Удалить камеру {camera_id}?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if confirm == QMessageBox.StandardButton.Yes:
+                if self.model.disconnect_device(camera_id):
+                    self.view.remove_camera_widget(camera_id)
+        if button is Qt.MouseButton.LeftButton:
+            self.view.toggle_chosen_camera(camera_id)
+
+    def _handle_frame_ready(self, device_id, frame):
+        # Здесь можно вызывать ProcessingController
+        self.view.update_camera_frame(device_id, frame)
+    def _open_available_cameras(self):
+        cameras = list([a.id, a.name] for a in self.model.get_available_devices())
+        dialog = AvailableCamerasDialog(
+            cameras
+        )
+        if dialog.exec():
+            for cam_id in dialog.get_selected():
+                self._add_camera(cam_id)
+
+    def _add_camera(self, camera_id):
+        self.model.connect_device(camera_id)
+        camera = self.model.get_device(camera_id)
+        if camera:
+            self.view.add_camera_widget(camera.id, camera.name)
+            self.video.start_stream(camera_id, camera.ip)
+
+    def _remove_camera(self, camera_id):
+        camera = self.model.disconnect_device(camera_id)
+        if camera:
+            self.video.stop_stream(camera_id)
+            self.view.remove_camera_widget(camera_id)
+
+    def _open_settings(self):
+        """Открывает окно настроек."""
+        settings_view = SettingsView()
+        settings_view.url_input.setText("http://default-camera-url.com")
+
+        def save_and_close():
+            new_url = settings_view.url_input.text()
+            # self.model.update_config(CameraConfig(
+            #    name=self.model.config.name,
+            #    url=new_url,
+            #    mqtt_topic=self.model.config.mqtt_topic,
+            #    processing_params=self.model.config.processing_params
+            # ))
+            settings_view.close()
+
+        settings_view.save_btn.clicked.connect(save_and_close)
+        settings_view.exec()
+
+    def start(self):
+        self.network.start()
+        # self.thread.start()
+
+    def stop(self):
+        """Останавливает приложение."""
+        # self.thread.stop()
+        # self.thread.wait()
+
+
+    def handle_mqtt_message(self,topic,message):
+        #print(topic,message)
+        if topic == self.network.discovery_topic:
+            message_str = message.decode()
+            id = message_str.split(":")[0]
+            self.network.mqtt_client.subscribe(id+"/amg8833")
+            self.model.add_device(Esp32Device(message_str.split(":")[0],message_str.split(":")[1],name="Camera-"+message_str.split(":")[0]))
+            return
+        device_id, postfix = topic.split("/")
+        if not device_id:
+            return
+        if self.model.get_device(device_id):
+            if postfix == "amg8833":
+                floats = struct.unpack('<64f', message)
+                matrix = [floats[i * 8: (i + 1) * 8] for i in range(8)]
+                self.processing.update_matrix(device_id,matrix)
+                #print(matrix)
