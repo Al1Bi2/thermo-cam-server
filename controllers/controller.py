@@ -5,7 +5,7 @@ from models.model import Esp32Device,Esp32Manager
 from views.view import MainWindow
 from PyQt6.QtWidgets import (QMessageBox)
 from PyQt6.QtCore import Qt, QObject, pyqtSignal
-from controllers.network import MqttController, VideoStreamController
+from controllers.network import MqttController
 from controllers.video import  ProcessingController,VideoProcessController,VideoProcessWorker
 import struct
 
@@ -193,4 +193,6 @@ class GuiController:
         settings_view.exec()
 
     def stop(self):
+        self.devices.mqtt.disconnect()
+        self.devices
         self.devices.stop_all()
