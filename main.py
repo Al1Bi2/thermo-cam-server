@@ -18,7 +18,7 @@ if __name__ == "__main__":
     model.add_device(Esp32Device("2"))
     model.add_device(Esp32Device("3"))
     view = MainWindow()
-    mqtt = MqttController(broker_host="192.168.0.5", broker_port=1883)
+    mqtt = MqttController(broker_host="localhost", broker_port=1883)
     mqtt.start()
     device_manager = DeviceManager(model, mqtt)
     controller = GuiController(model, view, device_manager)

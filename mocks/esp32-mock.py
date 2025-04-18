@@ -84,7 +84,7 @@ client = mqtt.Client(client_id=DEVICE_ID, callback_api_version=mqtt.CallbackAPIV
 def message_handler( client_a, userdata, message):
     global client, active,connected
     print(message.payload.decode())
-    if message.topic == "server/status":
+    if message.topic == "server/status":    
         if message.payload.decode() == "offline":
             active = False
             connected = False

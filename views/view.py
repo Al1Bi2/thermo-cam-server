@@ -39,6 +39,7 @@ class CameraWidget(QLabel):
 
 class MainWindow(QMainWindow):
     camera_clicked = pyqtSignal(str, Qt.MouseButton)
+    exit = pyqtSignal()
     expanded_camera_id = None
     def __init__(self):
         super().__init__()
@@ -96,6 +97,7 @@ class MainWindow(QMainWindow):
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
             if self.isFullScreen():
+                self.exit.emit()
                 self.close()
 
     def toggle_chosen_camera(self, camera_id):

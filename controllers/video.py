@@ -5,7 +5,7 @@ import cv2
 import multiprocessing as mp
 import time
 import queue
-MJPEG_PORT = 8080
+MJPEG_PORT = 80
 FRAMERATE = 25
 
 
@@ -17,12 +17,13 @@ class VideoProcessWorker(mp.Process):
         self.pipe = pipe
         self.video_url = f"http://{device_ip}:{MJPEG_PORT}/mjpeg/1"
         self.running = True
+        self.paused = True
 
     def run(self):
         cap = cv2.VideoCapture(self.video_url)
 
         if not cap.isOpened():
-            self.queue.put({
+            self.pipe.send({
                 "type" : "event",
                 "event": "error",
                 "id": self.device_id,
@@ -41,8 +42,26 @@ class VideoProcessWorker(mp.Process):
         while self.running:
             if self.pipe.poll():
                 cmd = self.pipe.recv()
-                if cmd == "stop":
+                if cmd == "pause":
+                    self.paused = True
+                    self.pipe.send({
+                        "type": "event",
+                        "event": "paused",
+                        "id": self.device_id
+                    })
+                elif cmd == "play":
+                    self.paused = False
+                    self.pipe.send({
+                        "type": "event",
+                        "event": "resumed",
+                        "id": self.device_id
+                    })
+                elif cmd == "stop":
                     break
+
+            if self.paused:
+                time.sleep(0.01)
+                continue
 
             ret, frame = cap.read()
             if not ret:
@@ -73,20 +92,31 @@ class VideoProcessController(QObject):
         self.poll_timer.start(int(1000//FRAMERATE-8))
 
     def start_stream(self,device_id: str,device_ip: str):
-        queue = mp.Queue()
-        parent_pipe, child_pipe = mp.Pipe()
-        process = VideoProcessWorker(device_id,device_ip,queue,child_pipe)
-        process.start()
-        self.workers[device_id] = (process,queue, parent_pipe)
+        worker = self.workers.get(device_id)
+        if not worker:
+            queue = mp.Queue()
+            parent_pipe, child_pipe = mp.Pipe()
+            process = VideoProcessWorker(device_id,device_ip,queue,child_pipe)
+            process.start()
+            self.workers[device_id] = (process,queue, parent_pipe)
+            parent_pipe.send("play")
+        else:
+            _,_, pipe = worker
+            pipe.send("play")
+    def pause_stream(self,device_id: str):
+        worker = self.workers.get(device_id)
+        if worker:
+            _, _, pipe = worker
+            pipe.send("pause")
 
     def stop_stream(self,device_id: str):
         worker = self.workers.get(device_id)
         if worker:
             process, queue, pipe =  worker
             pipe.send("stop")
-            process.join(timeout=0.1)
+            process.join(timeout=0.5)
             if process.is_alive():
-                process.kill()
+                process.terminate()
             del self.workers[device_id]
 
     def stop_all_streams(self):
@@ -123,6 +153,8 @@ class ProcessingController(QObject):
     def __init__(self):
         super().__init__()
         self.latest_matrix: dict[str, list[list[float]]] = {}
+        self.min = 1000
+        self.max = 0
 
     def update_matrix(self, device_id: str, matrix: list[list[float]]):
         self.latest_matrix[device_id] = matrix
@@ -141,6 +173,9 @@ class ProcessingController(QObject):
         self.overlay_ready.emit(device_id, overlay)
 
     def create_heatmap(self, data, frame_shape):
+
         heatmap = cv2.resize(data, (frame_shape[1], frame_shape[0]), interpolation=cv2.INTER_CUBIC)
-        heatmap = np.uint8(255 * (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-5))
+        self.min = heatmap.min() if heatmap.min() < self.min else self.min
+        self.max = heatmap.max() if heatmap.max() > self.min else self.max
+        heatmap = np.uint8(255 * (heatmap -  self.min) / ( self.max - self.min + 1e-5))
         return cv2.applyColorMap(heatmap, cv2.COLORMAP_HSV)
