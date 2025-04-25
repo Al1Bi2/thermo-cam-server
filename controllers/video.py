@@ -21,7 +21,7 @@ class VideoProcessWorker(mp.Process):
 
     def run(self):
         cap = cv2.VideoCapture(self.video_url)
-
+        a = 0
         if not cap.isOpened():
             self.pipe.send({
                 "type" : "event",
@@ -66,7 +66,8 @@ class VideoProcessWorker(mp.Process):
             ret, frame = cap.read()
             if not ret:
                 continue
-
+            a+=1
+            print(a)
             now = time.time()
             if now - last_frame_time >= 1.0/FRAMERATE:
                 last_frame_time = now

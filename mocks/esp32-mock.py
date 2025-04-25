@@ -15,7 +15,7 @@ from zeroconf import Zeroconf,ServiceBrowser, ServiceListener
 # === CONFIG ===
 DEVICE_ID = "esp32-mock"
 FAKE_IP = "192.168.0.123"  # должен быть назначен вручную через виртуальный адаптер
-MJPEG_PORT = 8080             # можно заменить на 8080 если порт занят
+MJPEG_PORT = 80           # можно заменить на 8080 если порт занят
 
 SERVICE_TYPE = "_http._tcp.local."
 MDNS_HOSTNAME = "thermocam-server.local."

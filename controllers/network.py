@@ -29,7 +29,9 @@ class MqttController(QObject):
         self.mqtt_client.on_message = self.on_message
         self.mqtt_client.will_set("server/status", "offline", qos=1)
         self.mqtt_client.connect(self.broker_host, self.broker_port, 60)
+        #self.mqtt_client.loop_start()
         threading.Thread(target=self.mqtt_client.loop_forever, daemon=True).start()
+
 
     def on_connect(self, client, userdata, flags, reason_code, properties):
         print(f"Connected to MQTT Broker with code {reason_code}")
@@ -53,7 +55,7 @@ class ZeroconfService:
 
         # Get local IP address
         # host_ip = socket.gethostbyname(socket.gethostname())
-        self.host_ip = "192.168.0.7"
+        self.host_ip = "192.168.0.5"
         print(f"Local IP address: {self.host_ip}")
         self.zeroconf_server = None
         self.service_info = None

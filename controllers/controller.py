@@ -26,6 +26,7 @@ class DeviceConnectionManager(QObject):
         self.mqtt = mqtt
 
     def handle_discovery(self,payload : str):
+        print(payload)
         device_id, ip = payload.split(":")
         device = self.model.get_device(device_id)
         if not device:
@@ -113,9 +114,9 @@ class DeviceManager(QObject):
             self.streams.start_stream(device.id, device.ip)
 
     def _on_device_deactivated(self, device_id: str):
-        self.streams.pause_stream(device_id)
-        self.model.get_device(device_id).active=False
         self.streams.stop_stream(device_id)
+        self.model.get_device(device_id).active=False
+
 
     def _on_device_disconnected(self, device_id: str):
         self.streams.stop_stream(device_id)
@@ -193,6 +194,7 @@ class GuiController:
         settings_view.exec()
 
     def stop(self):
-        self.devices.mqtt.disconnect()
-        self.devices
+        self.devices.mqtt.publish("server/status","offline",1)
+        #self.devices.mqtt.disconnect()
+
         self.devices.stop_all()
