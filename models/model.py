@@ -1,6 +1,24 @@
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, Literal
 
+
+@dataclass
+class AlertZone:
+    id: str
+    type: Literal["point", "area", "global"]
+    coords: list[tuple[int, int]]
+    threshold: float
+    color: str = "red"
+    enabled: bool = True
+
+    def serialize(self) -> tuple[list[tuple[int,int]],str,bool,float]:
+        return (self.coords,self.type,self.enabled,self.threshold)
+
+    def deserialize(self,zone):
+        self.coords = zone[0]
+        self.type = zone[1]
+        self.enabled = zone[2]
+        self.threshold = zone[3]
 
 @dataclass
 class Esp32Device:
@@ -10,6 +28,7 @@ class Esp32Device:
         self.name = name if name is not None else "Camera-"+id
         self.connected = connected
         self.active = active
+        self.alert_zones : list[AlertZone] = []
 
     def is_connected(self):
         return self.connected

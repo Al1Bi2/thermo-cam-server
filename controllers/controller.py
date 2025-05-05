@@ -1,10 +1,11 @@
 # from model import CameraModel
+from views.AlertsEditorOverlay import AlertsZonesEditor
 from views.AvailableCamerasDialog import AvailableCamerasDialog
 from views.view import SettingsView
-from models.model import Esp32Device,Esp32Manager
+from models.model import Esp32Device,Esp32Manager, AlertZone
 from views.view import MainWindow
 from PyQt6.QtWidgets import (QMessageBox)
-from PyQt6.QtCore import Qt, QObject, pyqtSignal
+from PyQt6.QtCore import Qt, QObject, pyqtSignal, QTimer
 from controllers.network import MqttController
 from controllers.video import  ProcessingController,VideoProcessController,VideoProcessWorker
 import struct
@@ -144,33 +145,32 @@ class GuiController:
 
         self.view.settings_button.clicked.connect(self._open_settings)
         self.view.add_camera_button.clicked.connect(self._open_available_cameras)
-        self.view.camera_clicked.connect(self._handle_camera_click)
+        self.view.request_camera_remove.connect(self._handle_camera_click)
+
+        self.view.request_editor.connect(self._open_alert_editor)
 
         self.devices.processor.overlay_ready.connect(self.view.update_camera_frame)
         self.view.exit.connect(self.stop)
 
-    def _handle_camera_click(self, camera_id, button):
-        if button == Qt.MouseButton.RightButton:
-            if self.view.expanded_camera_id == camera_id:
-                QMessageBox.warning(
-                    self.view,
-                    "Удаление невозможно",
-                    "Нельзя удалить развернутую камеру. Сначала сверните её."
-                )
-                return
-            confirm = QMessageBox.question(
+    def _handle_camera_click(self, camera_id):
+        if self.view.expanded_camera_id == camera_id:
+            QMessageBox.warning(
                 self.view,
-                "Подтверждение удаления",
-                f"Удалить камеру {camera_id}?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                "Удаление невозможно",
+                "Нельзя удалить развернутую камеру. Сначала сверните её."
             )
-            if confirm == QMessageBox.StandardButton.Yes:
-                self.devices.stop_device(camera_id)
-                self.model.disconnect_device(camera_id)
-                self.view.remove_camera_widget(camera_id)
+            return
+        confirm = QMessageBox.question(
+            self.view,
+            "Подтверждение удаления",
+            f"Удалить камеру {camera_id}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if confirm == QMessageBox.StandardButton.Yes:
+            self.devices.stop_device(camera_id)
+            self.model.disconnect_device(camera_id)
+            self.view.remove_camera_widget(camera_id)
 
-        elif button == Qt.MouseButton.LeftButton:
-            self.view.toggle_chosen_camera(camera_id)
 
     def _open_available_cameras(self):
         cameras = [(d.id, d.name) for d in self.model.get_available_devices()]
@@ -198,3 +198,28 @@ class GuiController:
         #self.devices.mqtt.disconnect()
 
         self.devices.stop_all()
+
+    def _open_alert_editor(self,device_id):
+        device = self.model.get_device(device_id)
+        if device:
+            zones = []
+            for zone in device.alert_zones:
+                zones.append(zone.serialize())
+            image = self.view.camera_widgets[device_id].pixmap
+            alert_editor = AlertsZonesEditor(image=image)
+            QTimer.singleShot(0, lambda : alert_editor.load_zones(zones))
+            alert_editor.exec()
+            alerts_zones = []
+            for zone in alert_editor.export_zones():
+                alert_zone = AlertZone(
+                    id="some_id",  # Required field
+                    type="point",  # Required field (default if you don't have it)
+                    coords=[],  # Empty, will be filled by deserialize()
+                    threshold=0.0  # Default value
+                )
+                alert_zone.deserialize(zone)
+                alerts_zones.append(alert_zone)
+            device.alert_zones.clear()
+            device.alert_zones = alerts_zones
+
+

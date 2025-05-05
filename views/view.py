@@ -3,15 +3,25 @@ import sys
 from PyQt6.QtWidgets import (
     QMainWindow, QLabel, QPushButton,
     QVBoxLayout, QWidget, QDialog,
-    QLineEdit, QVBoxLayout,QGridLayout, QScrollArea, QSizePolicy
+    QLineEdit, QVBoxLayout,QGridLayout, QScrollArea, QSizePolicy, QMenu, QStyle
 )
-from PyQt6.QtGui import QPixmap, QImage
+from PyQt6.QtGui import QPixmap, QImage, QIcon
 from PyQt6.QtCore import Qt
 from PyQt6.QtCore import QThread, pyqtSignal
+from views.AlertsEditorOverlay import AlertsZonesEditor
 import math
 CAMERA_WIDGET_DEFAULT_STYLE = "border: 1px double black; padding: 5px; margin 5px"
 CAMERA_WIDGET_EXPANDED_STYLE = "border: 3px solid black; padding: 15px; margin 20px"
+
+
 class CameraWidget(QLabel):
+
+    request_fullscreen = pyqtSignal(str)  # camera_id
+    request_remove = pyqtSignal(str)      # camera_id
+    request_settings = pyqtSignal(str)    # camera_id
+    request_alerts_editor = pyqtSignal(str)
+   # camera_id
+
     def __init__(self,cam_id,camera_name):
         super().__init__()
         self.setText(f"{camera_name}\nID: {cam_id}")
@@ -19,7 +29,41 @@ class CameraWidget(QLabel):
         self.setStyleSheet("border: 1px solid black; padding: 5px; margin 5px")
         self.setMinimumSize(400,200)
         self.pixmap = None
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self.contextMenuEvent)
 
+        self.cam_id = cam_id
+        self.camera_name = camera_name
+        self.expanded = False
+
+    def contextMenuEvent(self, pos):
+        menu = QMenu(self)
+        style = self.style()
+
+
+        max_screen_icon = QStyle.StandardPixmap.SP_TitleBarMaxButton if self.expanded \
+            else QStyle.StandardPixmap.SP_TitleBarNormalButton
+        fullscreen_action = menu.addAction(self.style().standardIcon(max_screen_icon),"На весь экран")
+        fullscreen_action.triggered.connect(lambda: self.request_fullscreen.emit(self.cam_id))
+
+        menu.addSeparator()
+
+        settings_action = menu.addAction(  style.standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView),"Настройки")
+        settings_action.triggered.connect(lambda: self.request_settings.emit(self.cam_id))
+
+        remove_action = menu.addAction(style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon),"Удалить")
+        remove_action.triggered.connect(lambda: self.request_remove.emit(self.cam_id))
+
+        alerts_editor_action = menu.addAction(style.standardIcon(QStyle.StandardPixmap.SP_DriveNetIcon), "Редактировать зоны")
+        alerts_editor_action.triggered.connect(lambda: self.request_alerts_editor.emit(self.cam_id))
+
+        menu.exec(self.mapToGlobal(pos))
+
+    def handle_action(self, camera_id, action_num):
+        print(f"Обработка действия {action_num} для камеры {camera_id}")
+        if action_num == 3:
+            # Логика удаления камеры
+            pass
     def update_frame(self, frame):
         height, width, channel = frame.shape
         bytes_per_line = 3 * width
@@ -32,15 +76,12 @@ class CameraWidget(QLabel):
             #print(a, self.size())
             self.setPixmap(self.pixmap.scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio))
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.pixmap_update("RESIZE EVENT")
-
 
 class MainWindow(QMainWindow):
-    camera_clicked = pyqtSignal(str, Qt.MouseButton)
+    request_camera_remove = pyqtSignal(str)
     exit = pyqtSignal()
     expanded_camera_id = None
+    request_editor = pyqtSignal(str)
     def __init__(self):
         super().__init__()
         self.camera_widgets: dict[str,CameraWidget] = {}  # Store widgets by camera_id
@@ -114,16 +155,39 @@ class MainWindow(QMainWindow):
             return
 
         widget = CameraWidget(camera_id,camera_name)
-        widget.mousePressEvent = lambda e,c_id = camera_id:self._on_camera_click(e,c_id)
+        #widget.mousePressEvent = lambda e,c_id = camera_id:self._on_camera_click(e,c_id)
+        widget.request_fullscreen.connect(self.toggle_fullscreen)
+        widget.request_remove.connect(self.request_camera_remove)
+        widget.request_settings.connect(self.show_camera_settings)
+        widget.request_alerts_editor.connect(self.request_editor)
+
         self.camera_widgets[camera_id] = widget
         self.camera_counter += 1
 
         self.update_grid_layout()
 
 
+    def toggle_fullscreen(self,camera_id):
+        self.camera_widgets.get(camera_id).expanded = not self.camera_widgets.get(camera_id).expanded
+        self.toggle_chosen_camera(camera_id)
 
+    def remove_camera(self, camera_id):
+        self.remove_camera_widget(camera_id)
+
+    def show_camera_settings(self, camera_id):
+        pass
+        #settings_dialog = SettingsView()
+        #settings_dialog.exec()
+    def show_alert_editor(self, camera_id,zones):
+        image = self.camera_widgets[camera_id].pixmap
+        alert_editor = AlertsZonesEditor(image=image)
+
+        alert_editor.load_zones(zones)
+        alert_editor.exec()
+        return alert_editor.export_zones()
     def _on_camera_click(self,event,camera_id):
         self.camera_clicked.emit(camera_id,event.button())
+
     def update_grid_layout(self):
         for i in reversed(range(self.grid_layout.count())):
             self.grid_layout.itemAt(i).widget().setParent(None)
@@ -132,7 +196,6 @@ class MainWindow(QMainWindow):
             self.grid_layout.setRowStretch(row, 0)
         for col in range(self.current_grid_dimensions[1]):
             self.grid_layout.setColumnStretch(col, 0)
-
 
         if self.expanded_camera_id:
             widget = self.camera_widgets[self.expanded_camera_id]
