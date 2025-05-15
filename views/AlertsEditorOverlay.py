@@ -1,7 +1,7 @@
 import sys
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QGraphicsView, QGraphicsScene,
-    QGraphicsPolygonItem, QGraphicsItem, QGraphicsEllipseItem,
+    QGraphicsPolygonItem, QGraphicsItem, QGraphicsEllipseItem,QGraphicsRectItem,
     QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton,
     QFrame, QWidget, QSizePolicy, QGraphicsPathItem, QMenu, QDialog, QCheckBox, QGraphicsPixmapItem, QSplitter
 )
@@ -70,73 +70,156 @@ class AlertPopupPanel(QDialog):
         if self.current_item:
             self.current_item.is_active = self.is_active_chk.checkState() == Qt.CheckState.Checked
 
+class AlertGlobalItem(QGraphicsRectItem):
+    def __init__(self,threshold = 60, enabled = False):
+        super().__init__(QRectF(0,0,200,200))
+
+        self.id = id
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsScenePositionChanges, False)
+        self.setZValue(-5)
+        self.threshold = threshold
+        self.is_active = enabled
+    def serialize(self, width, height):
+        return {"coords": [QPointF(0,0),QPointF(0,1),QPointF(1,1),QPointF(1,0)],
+                "type": "global",
+                "enabled": self.is_active,
+                "threshold": self.threshold
+                }
+
+    def contextMenuEvent(self, event):
+        popup = AlertPopupPanel(item=self, threshold_value=self.threshold, is_active=self.is_active)
+
+        popup.move(event.screenPos())
+        popup.exec()
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange:
+
+            view = self.scene().views()[0]
+            width = view.width()
+            height = view.height()
+            self.setRect(0, 0, width, height)
+            return QPointF(0,0)
+        return super().itemChange(change, value)
+    def set_coords(self,coords, width, height):
+        point = coords[0]
+        pos = transform_coords_f2i(point, width, height)
+
+        self.setRect(0, 0, width, height)
+        self.setPos(QPointF(0,0))
 
 class AlertPointItem(QGraphicsEllipseItem):
-    def __init__(self, pos = QPointF(), threshold=50):
+    def __init__(self, coords=QPointF(), threshold=50, enabled=True):
         super().__init__(QRectF(-10, -10, 20, 20))
-        self.setPos(pos)
-        print(pos)
+        self.setPos(coords)
+        self.id = id
+
+        self.is_active = enabled
         self.setBrush(QColor(255, 0, 0, 150))
         self.setPen(QPen(Qt.GlobalColor.red, 2))
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsScenePositionChanges,True)
         self.threshold = threshold
-        self.points = [pos]
-        self.is_active = True
-    def serialize(self,width,height):
-        return (transform_coords([self.pos()],width,height),"point",self.is_active,self.threshold)
 
-    def deserialize(self,zone,width,height):
-        self.points = transform_coords_reverse(zone[0],width,height)
-        self.setPos(self.points[0])
-        #self.type = zone[1]
-        self.is_active = zone[2]
-        self.threshold = zone[3]
+    def serialize(self, width, height):
+        return {"coords": [transform_coords_i2f(self.pos(), width, height)],
+                "type": "point",
+                "enabled": self.is_active,
+                "threshold": self.threshold
+                }
+
+    def set_coords(self,coords, width, height):
+        point = coords[0]
+        pos = transform_coords_f2i(point, width, height)
+        self.setPos(pos)
+
 
     def contextMenuEvent(self, event):
         popup = AlertPopupPanel(item=self, threshold_value=self.threshold, is_active=self.is_active)
 
         popup.move(event.screenPos())
         popup.exec()
-        print(self.is_active, self.threshold)
 
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange:
+            new_pos = value
+            view = self.scene().views()[0]
+            view_rect = view.mapToScene(view.viewport().geometry()).boundingRect()
+
+
+
+            # Если элемент полностью выходит за view_rect - корректируем позицию
+            if not view_rect.contains(new_pos):
+                # ограничение по координатам, чтобы центр не выходил за пределы
+                x = min(max(new_pos.x(), view_rect.left() ),
+                        view_rect.right() )
+                y = min(max(new_pos.y(), view_rect.top() ),
+                        view_rect.bottom() )
+
+                return QPointF(x, y)
+        return super().itemChange(change, value)
 
 
 class AlertPolygonItem(QGraphicsPolygonItem):
-    def __init__(self, points=None, threshold=50):
+    def __init__(self, coords=None, threshold=50, enabled=True):
         super().__init__()
-        if points is None:
-            points = [QPointF(0, 0), QPointF(100, 0), QPointF(100, 100), QPointF(0, 100)]
-        self.setPolygon(QPolygonF(points))
+        if coords is None:
+            coords = [QPointF(0, 0), QPointF(100, 0), QPointF(100, 100), QPointF(0, 100)]
+
+        self.setPolygon(QPolygonF(coords))
+        self.threshold = threshold
+        self.coords = coords
+        self.is_active = enabled
         self.setBrush(QColor(0, 0, 255, 50))
         self.setPen(QPen(Qt.GlobalColor.blue, 2))
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
-        self.threshold = threshold
-        self.points = points
-        self.is_active = True
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsScenePositionChanges,True)
 
+    def serialize(self, width, height):
+        coords = [self.mapToScene(self.polygon().value(i)) for i in range(self.polygon().size())]
+        return {"coords": [transform_coords_i2f(point, width, height) for point in coords],
+                "type": "area",
+                "enabled": self.is_active,
+                "threshold": self.threshold
+                }
 
-    def serialize(self,width,height):
-        points = [self.mapToScene(self.polygon().value(i)) for i in range(self.polygon().size())]
-        return (transform_coords(points,width,height),"area",self.is_active,self.threshold)
-
-    def deserialize(self,zone,width,height):
-        self.points = transform_coords_reverse(zone[0],width,height)
-        self.setPolygon(QPolygonF(self.points))
-        #self.type = zone[1]
-        self.is_active = zone[2]
-        self.threshold = zone[3]
+    def set_coords(self,coords, width, height):
+        points = [transform_coords_f2i(point, width, height) for point in coords]
+        self.setPolygon(QPolygonF(points))
 
     def contextMenuEvent(self, event):
         popup = AlertPopupPanel(item=self, threshold_value=self.threshold, is_active=self.is_active)
 
         popup.move(event.screenPos())
         popup.exec()
-        print(self.is_active, self.threshold)
 
     def contains(self, point):
         return self.polygon().containsPoint(point, Qt.FillRule.OddEvenFill)
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange:
+            new_pos = value
+            # Пример ограничения: только в пределах сцены
+            rect = self.scene().sceneRect()
+            br = self.boundingRect()
+            new_br = br.translated(value)
+            new_pos = value
+            view = self.scene().views()[0]
+            view_rect = view.mapToScene(view.viewport().geometry()).boundingRect()
+
+            # Если элемент полностью выходит за view_rect - корректируем позицию
+            if not view_rect.contains(new_br):
+                # ограничение по координатам, чтобы центр не выходил за пределы
+                x = min(max(new_pos.x(), view_rect.left() - br.left()),
+                        view_rect.right() - br.right() )
+                y = min(max(new_pos.y(), view_rect.top()- br.top() ),
+                        view_rect.bottom()- br.bottom() )
+
+                return QPointF(x, y)
+        return super().itemChange(change, value)
 
 
 class PolygonEditor:
@@ -187,7 +270,7 @@ class PolygonEditor:
     def is_near_first_point(self, pos, radius=10):
         if not self.first_point:
             return False
-        return ((pos.x()-self.first_point.x())**2+ (pos.y()-self.first_point.y())**2)**0.5 <= radius
+        return ((pos.x() - self.first_point.x()) ** 2 + (pos.y() - self.first_point.y()) ** 2) ** 0.5 <= radius
 
     def reset_double_click(self):
         self.waiting_for_double_click = False
@@ -251,49 +334,52 @@ class AlertEditorOverlay(QGraphicsView):
         self.polygon_editor = PolygonEditor(self.scene)
         self.polygon_mode = False
 
-        self.global_threshold = 50
-        self.global_zone_is_active = False
 
-        self.setSceneRect(0, 0, 640, 480)
+
+        self.setSceneRect(-20, -20, 640, 480)
         self.view_width = 640
         self.view_height = 480
 
     def set_background_later(self, image: QPixmap):
         QTimer.singleShot(0, lambda: self.set_background(image))
 
+    # TODO: load video only image by signal not composite pixmap
     def set_background(self, image: QPixmap):
+
         if self.bg_item:
             self.scene.removeItem(self.bg_item)
         if image:
+            print(f"Pixmap valid: {not image.isNull()}, size: {image.width()}x{image.height()}")
             view_width = self.viewport().width()
             image_width = image.width()
             image_height = image.height()
 
             scale_factor = view_width / image_width
             scaled_height = int(image_height * scale_factor)
-            self.setFixedSize(view_width,scaled_height)
-            self.setMinimumSize(view_width,scaled_height)
-            self.setMaximumSize(view_width, scaled_height)
-            print("New Size: ", view_width, ", ", scaled_height)
-            scaled_pixmap = QPixmap(image).scaled(
+
+            scaled_pixmap = image.scaled(
                 view_width,
                 scaled_height,
                 Qt.AspectRatioMode.KeepAspectRatio
             )
 
-            self.bg_item = self.scene.addPixmap(scaled_pixmap)
-            self.bg_item.setZValue(-1)
+            self.bg_item = self.scene.addPixmap(QGraphicsPixmapItem(scaled_pixmap))
+            self.bg_item.setZValue(-10)
 
             # Устанавливаем размер сцены строго по изображению
+            self.setFixedSize(view_width, scaled_height)
             self.setSceneRect(QRectF(0, 0, view_width, scaled_height))
-            print(self.scene)
-            self.width = view_width
-            self.height = scaled_height
+
+
+
+
+
+
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         size = self.viewport().size()
-        self.setSceneRect(0, 0, size.width(), size.height())
+        self.setSceneRect(-20, -20, size.width(), size.height())
         self.view_width = size.width()
         self.view_height = size.height()
         # if self.bg_item:
@@ -317,42 +403,33 @@ class AlertEditorOverlay(QGraphicsView):
         if event.button() == Qt.MouseButton.LeftButton:
             item = self.scene.itemAt(scene_pos, self.transform())
 
-            if not isinstance(item,(AlertPointItem,AlertPolygonItem)):
+            if not isinstance(item, (AlertPointItem, AlertPolygonItem)):
                 if self.polygon_mode:
                     self.polygon_editor.add_point(scene_pos)
                 else:
                     self.current_item = AlertPointItem(scene_pos)
                     self.scene.addItem(self.current_item)
+                self.viewport().update()
         super().mousePressEvent(event)
 
 
-def transform_coords(points: QPointF | list[QPointF], width, height) -> list[tuple[int, int]]:
-    if isinstance(points, QPointF):
-        return [(points.x() / width, points.y() / height)]
-    if isinstance(points, list):
-        transformed_points = []
-        for point in points:
-            transformed_points.append((point.x() / width, point.y() / height))
-        return transformed_points
+def transform_coords_i2f(point: QPointF, width, height) -> QPointF:
+    return QPointF(point.x() / width, point.y() / height)
 
-def transform_coords_reverse(points, width, height) -> list[QPointF]:
-    if isinstance(points, QPointF):
-        return [QPointF(points.x() * width, points.y() * height)]
-    if isinstance(points, list):
-        transformed_points = []
-        for point in points:
-            transformed_points.append(QPointF(point[0] * width, point[1] * height))
-        return transformed_points
+
+def transform_coords_f2i(point: QPointF, width, height) -> QPointF:
+    return QPointF(point.x() * width, point.y() * height)
+
+
 class AlertsZonesEditor(QDialog):
     def __init__(self, initial_alerts=None, parent=None, image=None):
         super().__init__(parent)
         self.setWindowTitle("Редактор зон наблюдения")
         self.setMinimumSize(800, 660)
-
+        self.image = image
         self.alerts = initial_alerts or []
 
         self.layout = QVBoxLayout()
-
 
         self.editor = AlertEditorOverlay()
         # self.editor.bg_item = image
@@ -380,24 +457,30 @@ class AlertsZonesEditor(QDialog):
         self.cancel_button.clicked.connect(self.reject)
         self.control_layout.addWidget(self.cancel_button)
 
-        #self.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Preferred)
+        # self.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Preferred)
         self.layout.addWidget(self.control_panel)
         self.setLayout(self.layout)
 
-
-
-    def load_zones(self,zones):
+    def load_zones(self, zones: list[dict]):
         scene_width = self.editor.view_width
         scene_height = self.editor.view_height
 
-        for zone  in zones:
+        for zone in zones:
             item = None
-            if zone[1] == "point":
-                item = AlertPointItem()
-            elif zone[1] == "area":
-                item = AlertPolygonItem()
-            item.deserialize(zone,scene_width,scene_height)
+            zone_type = zone.pop("type")
+            zone.pop("color")
+
+            coords = zone.pop("coords")
+            if zone_type=="global":
+                item = AlertGlobalItem(**zone)
+            elif zone_type == "point":
+                item = AlertPointItem(**zone)
+            elif zone_type == "area":
+                item = AlertPolygonItem(**zone)
             self.editor.scene.addItem(item)
+            item.set_coords(coords,scene_width,scene_height)
+
+
     def keyPressEvent(self, event):
         """Обработка нажатия клавиш"""
         if event.key() == Qt.Key.Key_Delete and self.editor.current_item:
@@ -417,6 +500,8 @@ class AlertsZonesEditor(QDialog):
 
     def clear_scene(self):
         self.editor.scene.clear()
+        #self.editor.set_background(self.image)
+        QTimer.singleShot(0, lambda: self.editor.set_background(self.image))
         self.editor.polygon_editor.cleanup()
 
     def export_zones(self):
@@ -424,12 +509,27 @@ class AlertsZonesEditor(QDialog):
         scene_height = self.editor.view_height
         zones = []
         for item in self.editor.scene.items():
-            if isinstance(item, (AlertPointItem, AlertPolygonItem)):
-
-                zones.append(item.serialize(scene_width,scene_height))
+            if isinstance(item, (AlertPointItem, AlertPolygonItem,AlertGlobalItem)):
+                zones.append(item.serialize(scene_width, scene_height))
 
         return zones
 
     def on_save(self):
         print("on save")
         pass
+
+def test_alerts_zones_editor():
+    app = QApplication(sys.argv)
+
+    # Создаем тестовое изображение для фона (если нужно)
+    pixmap = QPixmap(640, 480)
+    pixmap.fill(Qt.GlobalColor.lightGray)  # Просто серый фон для теста
+
+    # Создаем диалог редактирования зон
+    editor = AlertsZonesEditor(image=pixmap)
+    editor.show()
+
+    sys.exit(app.exec())
+
+if __name__ == "__main__":
+    test_alerts_zones_editor()

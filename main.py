@@ -13,10 +13,11 @@ if __name__ == "__main__":
     mdns = ZeroconfService()
     mdns.start()
 
+    devices = Esp32Manager.load_devices()
+
     model = Esp32Manager()
-    model.add_device(Esp32Device("1"))
-    model.add_device(Esp32Device("2"))
-    model.add_device(Esp32Device("3"))
+    model.devices = devices
+    model.save_devices()
     view = MainWindow()
     mqtt = MqttController(broker_host="192.168.0.5", broker_port=1883)
     mqtt.start()

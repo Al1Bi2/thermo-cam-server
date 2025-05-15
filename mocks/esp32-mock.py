@@ -76,7 +76,28 @@ def resolve_server_ip():
     return listener.found_ip
 # === MQTT Logic ===
 def generate_matrix():
-    floats = [random.uniform(20.0, 35.0) for _ in range(64)]
+    #floats = [random.uniform(20.0, 35.0) for _ in range(64)]
+    #matrix = 20.0 + 15.0 * (np.arange(8)[:, None] + np.arange(8)) / (2 * 7)
+
+    chessboard = np.indices((8, 8)).sum(axis=0) % 2  # Чёрно-белый узор
+
+    # Задаем координаты горячей точки (3,2) - 4-й столбец, 3-я строка
+    hotspot_x, hotspot_y = 3, 2
+
+    # Создаем градиент удаления от горячей точки (нормированный от 0 до 1)
+    distance = np.sqrt((np.arange(8)[None, :] - hotspot_x) ** 2 +
+                       (np.arange(8)[:, None] - hotspot_y) ** 2)
+    distance = distance / np.max(distance)  # Нормализуем
+
+    # Усиливаем контраст шахматки вблизи горячей точки
+    chessboard = chessboard * (1.0 + 2.0 * (1.0 - distance))  # Градиентный эффект
+
+    # Нормализуем в диапазон 20.0-35.0°C
+    matrix = 20.0 + 15.0 * (chessboard - np.min(chessboard)) / (np.max(chessboard) - np.min(chessboard))
+
+    # Делаем горячую точку максимально горячей (35°C)
+    matrix[hotspot_y, hotspot_x] = 35.0
+    floats = matrix.flatten().tolist()
     return struct.pack('<64f', *floats)
 connected = False
 active = False

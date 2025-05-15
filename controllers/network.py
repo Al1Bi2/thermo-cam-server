@@ -43,6 +43,7 @@ class MqttController(QObject):
         self.mqtt_client.publish(topic,payload,qos)
 
     def subscribe(self,topic, qos = 0):
+        print(topic)
         self.mqtt_client.subscribe(topic,qos)
 
     def unsubscribe(self,topic):
